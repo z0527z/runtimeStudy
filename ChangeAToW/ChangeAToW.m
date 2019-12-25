@@ -8,35 +8,11 @@
 
 #import "ChangeAToW.h"
 #import <objc/runtime.h>
+#include <malloc/malloc.h>
 
-//@interface ChangeAToW ()
-//{
-//    __strong NSString * _firstName;
-//    __weak NSNumber * _phone;
-//    __unsafe_unretained id _delegate;
-//    __strong NSString * _address;
-//    __unsafe_unretained float _success;
-//}
-//@end
+static const char * s_delegate_ivar_name = NULL;
 
 @implementation ChangeAToW
-
-- (void)setDelegate:(id)delegate
-{
-    _delegate = delegate;
-//    NSLog(@"------> %@", [[self delegate] class]);
-//
-//    unsigned int count = 0;
-//    Ivar * ivars = class_copyIvarList([self class], &count);
-//    for (unsigned int i = 0; i < count; i ++) {
-//        Ivar ivar = ivars[i];
-//        const char * name = ivar_getName(ivar);
-//        const char * encode = ivar_getTypeEncoding(ivar);
-//        long offset = ivar_getOffset(ivar);
-//        printf("name:%s, encode:%s, offset:%ld\n", name, encode, offset);
-//    }
-}
-
 
 @end
 
@@ -78,7 +54,63 @@ static void fixupSelector(Class cls, SEL orgSel, SEL fixSel) {
     }
 }
 
+__attribute__((__always_inline__))
+static void tryFree(const void * p) {
+    if (p && malloc_size(p)) {
+        free((void *)p);
+    }
+}
+
+static inline void * memdup(const void * mem, size_t length) {
+    void * dup = malloc(length);
+    memcpy(dup, mem, length);
+    return dup;
+}
+
+static const char * copyNoneWeakIvarName(objc_property_t property) {
+    if (!property) return NULL;
+    bool findWeak = false;
+    uint32_t outCount = 0;
+    const char * ivarName = NULL;
+    objc_property_attribute_t * attributes = property_copyAttributeList(property, &outCount);
+    for (uint32_t i = 0; i < outCount; i ++) {
+        objc_property_attribute_t attr = *(attributes + i);
+        if (strcmp(attr.name, "W") == 0) {
+            findWeak = true;
+            tryFree(ivarName);
+        }
+        else if (strcmp(attr.name, "V") == 0 && attr.value) {
+            ivarName = (const char *)memdup(attr.value, strlen(attr.value) + 1);
+        }
+    }
+    free(attributes);
+    return findWeak ? NULL : ivarName;
+}
+
+static Class findClassWithPropertyName(Class cls, const char * name) {
+    objc_property_t property = class_getProperty(cls, name);
+    if (!property) {
+        return NULL;
+    }
+    const char * ivarName = copyNoneWeakIvarName(property);
+    if (!ivarName) {
+        cls = class_getSuperclass(cls);
+        while (cls) {
+            property = class_getProperty(cls, name);
+            ivarName = copyNoneWeakIvarName(property);
+            if (ivarName) break;
+            cls = class_getSuperclass(cls);
+        }
+    }
+    s_delegate_ivar_name = ivarName;
+    return ivarName ? cls : NULL;
+}
+
 static void fixupAssignDelegate(Class cls) {
+    Class orgCls = cls;
+    
+    // 找到类（父类）中包含的该名字的属性
+    cls = findClassWithPropertyName(cls, "delegate");
     struct {
         Class isa;
         Class superClass;
@@ -119,6 +151,9 @@ static void fixupAssignDelegate(Class cls) {
         } *ro;
         
     } *objcRWClass = (typeof(objcRWClass))(objcClass->bits & FAST_DATA_MASK);
+    
+    #define RO_IS_ARC 1<<7
+    objcRWClass->ro->flags |= RO_IS_ARC;
     #define RW_CONSTRUCTING (1<<26)
     objcRWClass->flags |= RW_CONSTRUCTING;
     
@@ -127,8 +162,9 @@ static void fixupAssignDelegate(Class cls) {
     class_setWeakIvarLayout(cls, weakIvarLayout);
     objcRWClass->flags &= ~RW_CONSTRUCTING;
     
-    fixupSelector(cls, @selector(setDelegate:), @selector(setFix_Delegate:));
-    fixupSelector(cls, @selector(delegate), @selector(fix_delegate));
+    
+    fixupSelector(orgCls, @selector(setDelegate:), @selector(setFix_Delegate:));
+    fixupSelector(orgCls, @selector(delegate), @selector(fix_delegate));
 }
 
 @end
