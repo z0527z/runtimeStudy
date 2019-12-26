@@ -106,10 +106,24 @@ static Class findClassWithPropertyName(Class cls, const char * name) {
     return ivarName ? cls : NULL;
 }
 
+struct ivar_t {
+    int32_t *offset;
+    const char *name;
+    const char *type;
+    uint32_t alignment_raw;
+    uint32_t size;
+};
+
+struct ivar_list_t {
+    uint32_t entsizeAndFlags;
+    uint32_t count;
+    struct ivar_t first;
+};
+
 static void fixupAssignDelegate(Class cls) {
     Class orgCls = cls;
     
-    // 找到类（父类）中包含的该名字的属性
+    // 找到包含该属性名的类（父类）
     cls = findClassWithPropertyName(cls, "delegate");
     struct {
         Class isa;
@@ -145,17 +159,39 @@ static void fixupAssignDelegate(Class cls) {
             const char * name;
             void * baseMethodList;
             void * baseProtocols;
-            const void * ivars;
+            const struct ivar_list_t * ivars;
             const uint8_t * weakIvarLayout;
             void * baseProperties;
         } *ro;
         
     } *objcRWClass = (typeof(objcRWClass))(objcClass->bits & FAST_DATA_MASK);
     
+    // 查找上面找到的类是否含有 ivars
+    struct ivar_list_t * ivarList = (struct ivar_list_t *)objcRWClass->ro->ivars;
+    if (!ivarList || !ivarList->count) {
+        return;
+    }
+    
+    // 设置类的 class_rw_t 的标志以便后续能够调用 class_setWeakIvarLayout
     #define RO_IS_ARC 1<<7
     objcRWClass->ro->flags |= RO_IS_ARC;
     #define RW_CONSTRUCTING (1<<26)
     objcRWClass->flags |= RW_CONSTRUCTING;
+    
+    // 从ivarList中找到该ivar
+    struct ivar_t * foundIvar = NULL;
+    for (uint32_t i = 0; i < ivarList->count; i ++) {
+        struct ivar_t * ivar = (&ivarList->first + i);
+        if (ivar->name && strcmp(s_delegate_ivar_name, ivar->name) == 0) {
+            foundIvar = ivar;
+            break;
+        }
+    }
+    
+    if (!foundIvar) {
+        return;
+    }
+    
     
     uint8_t * weakIvarLayout = (uint8_t *)calloc(2, 1);
     *weakIvarLayout = 0x22;
