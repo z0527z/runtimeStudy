@@ -192,15 +192,45 @@ static void fixupAssignDelegate(Class cls) {
         return;
     }
     
+    // 找到 s_delegate_ivar_name 所在的位置，计算它前面有多少个非weak ivar，计算从它开始到下一个非weak ivar的个数
+    const uint8_t * weakLayout = class_getWeakIvarLayout(cls);
+    uint8_t * placeHolderNewWeakLayout = calloc(ivarList->count + 1, sizeof(uint8_t));
+    uint8_t * p = placeHolderNewWeakLayout;
+    ptrdiff_t offset = ivar_getOffset((Ivar)foundIvar);
+    bool didFix = false;
+    while (*weakLayout != '\x00') {
+        int firstWeakOffset = (*weakLayout & 0xf0) >> 4;
+        int continuousWeakCount = *weakLayout & 0xf;
+        
+        // 要改变的属性不在范围内
+        if (firstWeakOffset + continuousWeakCount + 1 > offset) {
+            *p++ = *weakLayout++;
+            continue;
+        }
+        
+        uint8_t newLayout =  ((firstWeakOffset << 4) & 0xf0)  | ((continuousWeakCount + 1) & 0xf);
+        *p++ = newLayout;
+        didFix = true;
+        break;
+    }
     
-    uint8_t * weakIvarLayout = (uint8_t *)calloc(2, 1);
-    *weakIvarLayout = 0x22;
-    class_setWeakIvarLayout(cls, weakIvarLayout);
+    if (!didFix) {
+        
+    }
+    
+    uint8_t * tmp = placeHolderNewWeakLayout;
+    while (*tmp != '\x00') {
+        printf("%x", *tmp++);
+    }
+    printf("\n");
+    
+    class_setWeakIvarLayout(cls, placeHolderNewWeakLayout);
     objcRWClass->flags &= ~RW_CONSTRUCTING;
     
     
     fixupSelector(orgCls, @selector(setDelegate:), @selector(setFix_Delegate:));
     fixupSelector(orgCls, @selector(delegate), @selector(fix_delegate));
 }
+
 
 @end
