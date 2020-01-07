@@ -197,13 +197,28 @@ static void fixupAssignDelegate(Class cls) {
     uint8_t * placeHolderNewWeakLayout = calloc(ivarList->count + 1, sizeof(uint8_t));
     uint8_t * p = placeHolderNewWeakLayout;
     ptrdiff_t offset = ivar_getOffset((Ivar)foundIvar);
+    unsigned long placeHolderIndex = offset / sizeof(void *);
+    unsigned long visitedOffset = 0;
     bool didFix = false;
     while (*weakLayout != '\x00') {
         int firstWeakOffset = (*weakLayout & 0xf0) >> 4;
         int continuousWeakCount = *weakLayout & 0xf;
         
-        // 要改变的属性不在范围内
-        if (firstWeakOffset + continuousWeakCount + 1 > offset) {
+        visitedOffset += firstWeakOffset + continuousWeakCount;
+        
+        if (placeHolderIndex == firstWeakOffset) { // 要改变的属性刚好在第一个weak前面
+            *p++ = (((firstWeakOffset - 1) << 4) & 0xf0) | ((continuousWeakCount + 1) & 0xf);
+            memcpy(p, weakLayout + 1, strlen((const char *)weakLayout) - 1);
+            didFix = true;
+            break;
+        }
+        else if (placeHolderIndex < firstWeakOffset) { // 要改变的属性在第一个weak前面好几个身位
+            *p++ = (((placeHolderIndex - 1) << 4) & 0xf0) | 0x1;
+            memcpy(p, weakLayout, strlen((const char *)weakLayout));
+            didFix = true;
+            break;
+        }
+        else if (visitedOffset + 1 < placeHolderIndex) { // 要改变的属性不在范围内
             *p++ = *weakLayout++;
             continue;
         }
@@ -214,13 +229,14 @@ static void fixupAssignDelegate(Class cls) {
         break;
     }
     
+    // 在原来的范围内找完都没有找到要改变的属性，则需要在原来的基础上新增layout描述
     if (!didFix) {
-        
+        *p++ = (((placeHolderIndex - visitedOffset - 1) << 4) & 0xf0) | 0x1;
     }
     
     uint8_t * tmp = placeHolderNewWeakLayout;
     while (*tmp != '\x00') {
-        printf("%x", *tmp++);
+        printf("%02x ", *tmp++);
     }
     printf("\n");
     
